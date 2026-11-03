@@ -197,61 +197,130 @@
 
   function needsPriority(algorithm) {
     const a = String(algorithm || "").toLowerCase();
+    const meta = global.Scheduler?.ALGORITHMS?.[a];
+    if (meta) return !!meta.needsPriority;
     return a.includes("prioridad");
   }
 
   function needsQuantum(algorithm) {
     const a = String(algorithm || "").toLowerCase();
+    const meta = global.Scheduler?.ALGORITHMS?.[a];
+    if (meta) return !!meta.needsQuantum;
     return a === "rr" || a === "roundrobin" || a === "round_robin";
   }
 
-  function drawStatement(doc, result, labels, startX, startY, maxW) {
+  function algoDisplayName(algorithm) {
+    const a = String(algorithm || "");
+    const meta = global.Scheduler?.ALGORITHMS?.[a];
+    return meta?.fullName || meta?.name || a || "—";
+  }
+
+  /** Datos del enunciado (procesos + algoritmo + quantum). */
+  function getStatementData(result) {
     const statement = result.statement || {};
-    const processes = statement.processes || [];
-    const algorithm = result.algorithm || statement.algorithm || "—";
-    const quantum = statement.quantum;
-    const showPrio = needsPriority(algorithm);
-    const showQ = needsQuantum(algorithm) || statement.needsQuantum;
+    const sol = result.matchedSolution || {};
+    const algorithm = result.algorithm || statement.algorithm || sol.algorithm || "";
+    const processes = (
+      statement.processes?.length
+        ? statement.processes
+        : sol.processes || []
+    ).map((p) => ({
+      id: p.id,
+      arrival: p.arrival,
+      burst: p.burst,
+      priority: p.priority,
+    }));
+    const quantum =
+      statement.quantum != null
+        ? statement.quantum
+        : sol.quantum != null
+          ? sol.quantum
+          : null;
+    return {
+      algorithm,
+      algoName: algoDisplayName(algorithm),
+      quantum,
+      needsQ: needsQuantum(algorithm) || !!statement.needsQuantum,
+      needsP: needsPriority(algorithm),
+      processes,
+    };
+  }
+
+  function drawStatement(doc, result, labels, startX, startY, maxW) {
+    const data = getStatementData(result);
+    const colCount = data.needsP ? 4 : 3;
+    const colW = Math.min(28, Math.max(18, (Math.min(maxW, 150) - 4) / colCount));
+    const rowH = 6;
+    const rows = Math.max(1, data.processes.length);
+    const boxH = 16 + (rows + 1) * rowH + 4;
+    const boxW = Math.min(maxW, 8 + colW * colCount);
+
+    doc.setFillColor(245, 250, 249);
+    doc.setDrawColor(...TEAL);
+    doc.roundedRect(startX, startY, boxW, boxH, 2, 2, "FD");
 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(10);
-    doc.setTextColor(...INK);
-    doc.text(labels.statement || "Enunciado", startX, startY);
+    doc.setTextColor(...TEAL);
+    doc.text(labels.statement || "Enunciado", startX + 3, startY + 5);
 
-    let meta = `${labels.algo || "Algoritmo"}: ${algorithm}`;
-    if (showQ && quantum != null) {
-      meta += `   ·   ${labels.quantum || "Quantum"}: ${quantum}`;
+    let meta = `${labels.algo || "Algoritmo"}: ${data.algoName}`;
+    if (data.needsQ && data.quantum != null && data.quantum !== "") {
+      meta += `   ·   ${labels.quantum || "Quantum"}: ${data.quantum}`;
     }
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
-    doc.text(meta, startX, startY + 5);
+    doc.setFontSize(8);
+    doc.setTextColor(...INK);
+    doc.text(meta, startX + 3, startY + 10, { maxWidth: boxW - 6 });
 
     const head = [
       labels.process || "Proceso",
       labels.arrival || "Llegada",
       labels.burst || "Ráfaga",
     ];
-    if (showPrio) head.push(labels.priority || "Prioridad");
+    if (data.needsP) head.push(labels.priority || "Prioridad");
 
-    const body = processes.map((p) => {
-      const row = [
-        { text: p.id, ok: null },
-        { text: String(p.arrival ?? ""), ok: null },
-        { text: String(p.burst ?? ""), ok: null },
-      ];
-      if (showPrio) row.push({ text: String(p.priority ?? ""), ok: null });
-      return row;
-    });
+    const body = data.processes.length
+      ? data.processes.map((p) => {
+          const row = [
+            { text: String(p.id ?? ""), ok: null },
+            { text: String(p.arrival ?? ""), ok: null },
+            { text: String(p.burst ?? ""), ok: null },
+          ];
+          if (data.needsP) {
+            row.push({ text: String(p.priority ?? ""), ok: null });
+          }
+          return row;
+        })
+      : [head.map(() => ({ text: "—", ok: null }))];
 
-    return drawGrid(doc, {
-      title: "",
-      head,
-      body,
-      startX,
-      startY: startY + 8,
-      maxW: Math.min(120, maxW),
-      maxH: 55,
-    });
+    const tableY = startY + 13;
+    for (let r = 0; r <= body.length; r++) {
+      for (let c = 0; c < head.length; c++) {
+        const x = startX + 3 + c * colW;
+        const y = tableY + r * rowH;
+        let fill = NEUTRAL;
+        let text = "";
+        let style = "normal";
+        if (r === 0) {
+          fill = [220, 235, 234];
+          text = String(head[c] ?? "");
+          style = "bold";
+        } else {
+          text = String(body[r - 1][c]?.text ?? "");
+          style = c === 0 ? "bold" : "normal";
+        }
+        doc.setFillColor(...fill);
+        doc.setDrawColor(170, 170, 170);
+        doc.rect(x, y, colW, rowH, "FD");
+        doc.setFont("helvetica", style);
+        doc.setFontSize(8);
+        doc.setTextColor(...INK);
+        doc.text(text, x + colW / 2, y + rowH / 2 + 1.1, { align: "center" });
+      }
+    }
+
+    return startY + boxH + 3;
   }
 
   function buildCronogramaBody(result) {
@@ -367,15 +436,24 @@
 
     let y = 18;
     const scoreBottom = drawScoreBox(doc, score, labels, pageW - margin - 72, y, 72);
+    const stmt = getStatementData(result);
 
-    if (!result.matchedSolution && !result.statement) {
+    if (!result.matchedSolution && !stmt.processes.length) {
       doc.setFontSize(11);
       doc.setTextColor(...BAD);
       doc.text(labels.missingStatement || "Sin enunciado en la entrega.", margin, y + 8);
       return;
     }
 
-    y = drawStatement(doc, result, labels, margin, y, pageW - margin * 2 - 80);
+    // Enunciado a la izquierda; nota a la derecha
+    y = drawStatement(
+      doc,
+      result,
+      labels,
+      margin,
+      y,
+      pageW - margin * 2 - 80
+    );
     y = Math.max(y, scoreBottom) + 2;
 
     const crono = buildCronogramaBody(result);
